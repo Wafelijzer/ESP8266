@@ -131,6 +131,9 @@ void publishEspInfo(float currentTemp) {
     data["target_temperature"] = targetTemperature;
   }
 
+  // Publish relay status (HIGH = true, LOW = false)
+  data["relay_status"] = digitalRead(RELAY_PIN) == HIGH;
+
   char jsonBuffer[384];
   serializeJson(doc, jsonBuffer);
   publishMessage(MQTT_TOPIC, jsonBuffer, true);
