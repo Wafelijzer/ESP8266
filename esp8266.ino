@@ -11,8 +11,8 @@
  *****************/
 
 // WiFi settings
-const char* WIFI_SSID = "IRONGOLEM";
-const char* WIFI_PASSWORD = "LOL123@!";
+const char* WIFI_SSID = "EnderDragon";
+const char* WIFI_PASSWORD = "";
 const uint8_t WIFI_MAX_RETRIES = 20;
 const unsigned long WIFI_RETRY_DELAY_MS = 500;
 
@@ -35,7 +35,7 @@ const float TEMP_MIN_VALID = -20.0;
 const float TEMP_MAX_VALID = 1000.0;
 
 // Output pin control
-const int RELAY_PIN = 5; // D1 GPIO5
+const int RELAY_PIN = 13; // D1 GPIO5
 
 // General settings
 const unsigned long PUBLISH_INTERVAL_MS = 1000;
@@ -49,7 +49,7 @@ PubSubClient mqttClient(wifiClient);
 MAX6675 thermocouple(THERMO_CLK, THERMO_CS, THERMO_DO);
 
 unsigned long lastPublishTime = 0;
-float targetTemperature = NAN;
+float targetTemperature = 0;
 bool wifiConnected = false;
 bool sensorError = false;
 
@@ -131,8 +131,8 @@ void publishEspInfo(float currentTemp) {
     data["target_temperature"] = targetTemperature;
   }
 
-  // Publish relay status (HIGH = true, LOW = false)
-  data["relay_status"] = digitalRead(RELAY_PIN) == HIGH;
+  // Publish relay status
+  data["relay_status"] = digitalRead(RELAY_PIN) == LOW;
 
   char jsonBuffer[384];
   serializeJson(doc, jsonBuffer);
@@ -150,24 +150,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   if (String(topic) == MQTT_TARGET_TOPIC) {
-    StaticJsonDocument<64> doc;
-    DeserializationError err = deserializeJson(doc, msg);
-    if (!err && doc.containsKey("text")) {
-      String tempStr = doc["text"];
-      tempStr.trim();
-
-      // Handle empty array or empty string
-      if (tempStr == "[]" || tempStr.isEmpty()) {
-        targetTemperature = 0;
-      } else {
-        targetTemperature = tempStr.toFloat();
-      }
-
-      Serial.printf("Target temperature set to %.2f°C\n", targetTemperature);
-    } else {
-      Serial.println("Invalid target temperature payload.");
-    }
+  targetTemperature = msg.toInt();
+  Serial.print("Target Temperature is: ");
+  Serial.println(targetTemperature);
   }
+
 }
 
 bool connectToMqtt() {
@@ -189,13 +176,13 @@ bool connectToMqtt() {
 
 void handleRelay(float currentTemp) {
   if (!isnan(currentTemp) && !isnan(targetTemperature)) {
-    if (abs(currentTemp - targetTemperature) >= 5.0) {
-      digitalWrite(RELAY_PIN, HIGH); // turn ON relay
+    if (currentTemp - targetTemperature <= -5) {
+      digitalWrite(RELAY_PIN, LOW); // turn ON relay
     } else {
-      digitalWrite(RELAY_PIN, LOW); // turn OFF relay
+      digitalWrite(RELAY_PIN, HIGH); // turn OFF relay
     }
   } else {
-    digitalWrite(RELAY_PIN, LOW); // default to safe state
+    digitalWrite(RELAY_PIN, HIGH); // default to safe state
   }
 }
 
@@ -206,7 +193,7 @@ void setup() {
   Serial.println("\nESP8266 MQTT Temperature Monitor");
 
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);
+  digitalWrite(RELAY_PIN, HIGH);
 
   wifiConnected = connectToWiFi();
   wifiClient.setInsecure(); // Use certificates in production
