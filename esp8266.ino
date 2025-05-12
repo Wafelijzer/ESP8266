@@ -3,6 +3,8 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include "max6675.h"
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
 #define MQTT_MAX_PACKET_SIZE 512
 
@@ -25,7 +27,9 @@ const char* MQTT_CLIENT_ID_PREFIX = "ESP8266_WafelIjzer";
 const char* MQTT_TOPIC = "esp8266/info";
 const char* MQTT_SUBSCRIBE_TOPIC = "esp8266/commands";
 const char* MQTT_TARGET_TOPIC = "esp8266/temp";
+const char* MQTT_MODE_TOPIC = "esp8266/mode";
 const unsigned long MQTT_RETRY_DELAY_MS = 5000;
+
 
 // Sensor configuration
 const int THERMO_DO = 12;
@@ -35,10 +39,12 @@ const float TEMP_MIN_VALID = -20.0;
 const float TEMP_MAX_VALID = 1000.0;
 
 // Output pin control
-const int RELAY_PIN = 13; // D1 GPIO5
+const int RELAY_PIN1 = 13;
+const int RELAY_PIN2 = 0;
 
 // General settings
 const unsigned long PUBLISH_INTERVAL_MS = 1000;
+uint8_t relayMode = 0; // 0: both, 1: only RELAY_PIN1, 2: only RELAY_PIN2
 
 /*************
  * VARIABLES *
@@ -47,11 +53,46 @@ const unsigned long PUBLISH_INTERVAL_MS = 1000;
 WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
 MAX6675 thermocouple(THERMO_CLK, THERMO_CS, THERMO_DO);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 unsigned long lastPublishTime = 0;
 float targetTemperature = 0;
 bool wifiConnected = false;
 bool sensorError = false;
+
+byte arrowUp[8] = {
+  0b00100,
+  0b01110,
+  0b10101,
+  0b00100,
+  0b00100,
+  0b00100,
+  0b00100,
+  0b00000
+};
+
+byte arrowDown[8] = {
+  0b00100,
+  0b00100,
+  0b00100,
+  0b00100,
+  0b10101,
+  0b01110,
+  0b00100,
+  0b00000
+};
+
+byte arrowBoth[8] = {
+  0b00100,
+  0b01110,
+  0b10101,
+  0b00100,
+  0b10101,
+  0b01110,
+  0b00100,
+  0b00000
+};
+
 
 /*************
  * FUNCTIONS *
@@ -132,7 +173,8 @@ void publishEspInfo(float currentTemp) {
   }
 
   // Publish relay status
-  data["relay_status"] = digitalRead(RELAY_PIN) == LOW;
+  /*data["relay_status1"] = digitalRead(RELAY_PIN1) == LOW;
+  data["relay_status2"] = digitalRead(RELAY_PIN2) == LOW;*/
 
   char jsonBuffer[384];
   serializeJson(doc, jsonBuffer);
@@ -147,15 +189,21 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   if (String(topic) == MQTT_SUBSCRIBE_TOPIC && msg == "restart") {
     ESP.restart();
+  } else if (String(topic) == MQTT_TARGET_TOPIC) {
+    targetTemperature = msg.toInt();
+    Serial.print("Target Temperature is: ");
+    Serial.println(targetTemperature);
+  } else if (String(topic) == MQTT_MODE_TOPIC) {
+    int mode = msg.toInt();
+    if (mode >= 0 && mode <= 2) {
+      relayMode = mode;
+      Serial.printf("Relay mode set to: %d\n", relayMode);
+    } else {
+      Serial.println("Invalid mode received");
+    }
   }
-
-  if (String(topic) == MQTT_TARGET_TOPIC) {
-  targetTemperature = msg.toInt();
-  Serial.print("Target Temperature is: ");
-  Serial.println(targetTemperature);
-  }
-
 }
+
 
 bool connectToMqtt() {
   if (mqttClient.connected()) return true;
@@ -166,6 +214,7 @@ bool connectToMqtt() {
   if (mqttClient.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
     mqttClient.subscribe(MQTT_SUBSCRIBE_TOPIC);
     mqttClient.subscribe(MQTT_TARGET_TOPIC);
+    mqttClient.subscribe(MQTT_MODE_TOPIC);
     Serial.println("MQTT connected and subscribed");
     return true;
   }
@@ -175,25 +224,51 @@ bool connectToMqtt() {
 }
 
 void handleRelay(float currentTemp) {
-  if (!isnan(currentTemp) && !isnan(targetTemperature)) {
-    if (currentTemp - targetTemperature <= -5) {
-      digitalWrite(RELAY_PIN, LOW); // turn ON relay
-    } else {
-      digitalWrite(RELAY_PIN, HIGH); // turn OFF relay
-    }
-  } else {
-    digitalWrite(RELAY_PIN, HIGH); // default to safe state
+  bool turnOn = (!isnan(currentTemp) && !isnan(targetTemperature) && (currentTemp - targetTemperature <= -5));
+
+  switch (relayMode) {
+    case 0: // both relays
+      digitalWrite(RELAY_PIN1, turnOn ? LOW : HIGH);
+      digitalWrite(RELAY_PIN2, turnOn ? LOW : HIGH);
+      break;
+    case 1: // only RELAY_PIN1
+      digitalWrite(RELAY_PIN1, turnOn ? LOW : HIGH);
+      digitalWrite(RELAY_PIN2, HIGH);
+      break;
+    case 2: // only RELAY_PIN2
+      digitalWrite(RELAY_PIN1, HIGH);
+      digitalWrite(RELAY_PIN2, turnOn ? LOW : HIGH);
+      break;
+    default: // fallback to safe
+      digitalWrite(RELAY_PIN1, HIGH);
+      digitalWrite(RELAY_PIN2, HIGH);
+      break;
   }
 }
+
 
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 5000);
 
   Serial.println("\nESP8266 MQTT Temperature Monitor");
+  // initialize LCD
+  lcd.init();
+  // turn on LCD backlight                      
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("WafelIjzer");
+  lcd.setCursor(0, 1);
+  lcd.print("Booting...");
+  lcd.createChar(0, arrowUp);
+  lcd.createChar(1, arrowDown);
+  lcd.createChar(2, arrowBoth);
 
-  pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, HIGH);
+
+  pinMode(RELAY_PIN1, OUTPUT);
+  digitalWrite(RELAY_PIN1, HIGH);
+  pinMode(RELAY_PIN2, OUTPUT);
+  digitalWrite(RELAY_PIN2, HIGH);
 
   wifiConnected = connectToWiFi();
   wifiClient.setInsecure(); // Use certificates in production
@@ -208,6 +283,7 @@ void setup() {
   } else {
     Serial.println("Initial temperature read failed.");
   }
+  
 
   Serial.println("Setup complete");
 }
@@ -238,6 +314,32 @@ void loop() {
   unsigned long currentMillis = millis();
   if (currentMillis - lastPublishTime >= PUBLISH_INTERVAL_MS) {
     float currentTemp = readTemperature();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Temp: ");
+    if (!isnan(currentTemp)) {
+      lcd.print(currentTemp);
+      lcd.print((char)223); // degree symbol
+      lcd.print("C");
+    } else {
+      lcd.print("Sensor Err");
+    }
+
+    lcd.setCursor(0, 1);
+    lcd.print("Target: ");
+    lcd.print(int(targetTemperature));
+    lcd.print((char)223);  // degree symbol
+    lcd.print("C ");
+
+    if(digitalRead(RELAY_PIN1) == LOW || digitalRead(RELAY_PIN2) == LOW){
+      switch (relayMode) {
+        case 0: lcd.write(byte(2)); break; // ↕ Both
+        case 1: lcd.write(byte(1)); break; // ↑ Up
+        case 2: lcd.write(byte(0)); break; // ↓ Down
+        default: lcd.print("?");
+      }
+    }
+
     handleRelay(currentTemp);
     publishEspInfo(currentTemp);
     lastPublishTime = currentMillis;
